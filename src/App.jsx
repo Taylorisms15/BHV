@@ -359,12 +359,12 @@ function RedFolderView({ clients, setClients }) {
 // ══════════════════════════════════════════════════════════════════════════════
 //  DOCUMENTS — UPLOAD & CERTIFY
 // ══════════════════════════════════════════════════════════════════════════════
-function DocumentsView({ clients }) {
+function DocumentsView({ clients, docs, setDocs, expiries, setExpiries }) {
   const [selId, setSelId]           = useState(clients[0]?.id||"");
   const [expanded, setExpanded]     = useState({estate:true,identity:false,property:false,health:false});
-  const [docs, setDocs]             = useState({});
   const [reviewTarget, setReview]   = useState(null);
   const [opNote, setOpNote]         = useState("");
+  const [opExpiry, setOpExpiry]     = useState("");
   const [dragOver, setDragOver]     = useState(null);
   const [pendingUp, setPending]     = useState(null);
   const [linkEdits, setLinkEdits]   = useState({});
@@ -396,12 +396,17 @@ function DocumentsView({ clients }) {
     if (link) addLog(`Vault link saved — ${fn}`,C.success);
   };
 
-  const openReview = (ck,fn) => { setReview({ck,fn}); setOpNote(getDoc(ck,fn)?.note||""); };
-  const closeReview = () => { setReview(null); setOpNote(""); };
+  const openReview = (ck,fn) => {
+    setReview({ck,fn});
+    setOpNote(getDoc(ck,fn)?.note||"");
+    setOpExpiry(expiries[selId]?.[fn]||"");
+  };
+  const closeReview = () => { setReview(null); setOpNote(""); setOpExpiry(""); };
 
   const certify = () => {
     const {ck,fn}=reviewTarget, doc=getDoc(ck,fn);
     setDoc(ck,fn,{...doc,status:"certified",certifiedAt:ts(),note:opNote});
+    if (opExpiry) setExpiries(p=>({...p,[selId]:{...p[selId],[fn]:opExpiry}}));
     addLog(`✦ Certified: "${fn}" — ${client.name}`,C.success);
     closeReview();
   };
@@ -574,6 +579,13 @@ function DocumentsView({ clients }) {
                   </div>
                 )}
 
+                {/* Expiry date */}
+                <div style={{marginBottom:14}}>
+                  <label style={S.label}>Document expiry date <span style={{textTransform:"none",letterSpacing:0,color:C.textMut}}>(if applicable — auto-populates Compliance)</span></label>
+                  <input type="date" style={{...S.input,maxWidth:220}}
+                    value={opExpiry} onChange={e=>setOpExpiry(e.target.value)}/>
+                </div>
+
                 {/* Notary note */}
                 <div style={{marginBottom:16}}>
                   <label style={S.label}>Notary note <span style={{textTransform:"none",letterSpacing:0,color:C.textMut}}>(optional)</span></label>
@@ -604,42 +616,60 @@ function DocumentsView({ clients }) {
 // ══════════════════════════════════════════════════════════════════════════════
 //  COMPLIANCE
 // ══════════════════════════════════════════════════════════════════════════════
-function ComplianceView({ clients }) {
+function ComplianceView({ clients, docs, expiries, setExpiries }) {
+  // Fields worth tracking for expiry — only show if the doc has been uploaded for this client
   const EXPIRY_FIELDS = ["Passport","Global Entry Card","Living Will / Medical Directive","Healthcare Power of Attorney","Property Deed"];
-  const [expiries, setExpiries] = useState({});
   const setExp = (cid,f,d) => setExpiries(p=>({...p,[cid]:{...p[cid],[f]:d}}));
+
+  // For a given client, return only fields that have been uploaded
+  const uploadedFields = (cid) =>
+    EXPIRY_FIELDS.filter(f =>
+      CATEGORIES.some(cat => docs[cid]?.[cat.key]?.[f])
+    );
 
   const statusLabel = days => days===null?"—":days<0?"Expired":days<=30?"Expires soon":days<=90?"Review due":"Current";
   const statusColor = days => days===null?C.textMut:days<0?C.danger:days<=30?C.danger:days<=90?C.warn:C.success;
   const statusBg    = days => days===null?"#eceae5":days<0?C.dangerBg:days<=30?C.dangerBg:days<=90?C.warnBg:C.successBg;
 
-  const all = clients.flatMap(c=>EXPIRY_FIELDS.map(f=>({cid:c.id,name:c.name,field:f,days:daysDiff(expiries[c.id]?.[f])})));
-  const urgent  = all.filter(x=>x.days!==null&&x.days<=90);
-  const current = all.filter(x=>x.days!==null&&x.days>90);
-  const unset   = all.filter(x=>x.days===null);
+  const allTracked = clients.flatMap(c=>uploadedFields(c.id).map(f=>({cid:c.id,name:c.name,field:f,days:daysDiff(expiries[c.id]?.[f])})));
+  const urgent  = allTracked.filter(x=>x.days!==null&&x.days<=90);
+  const current = allTracked.filter(x=>x.days!==null&&x.days>90);
+  const unset   = allTracked.filter(x=>x.days===null);
 
   return (
     <>
       <PageHeader title="Compliance" sub="Expiration tracking across all clients"/>
       <div style={{padding:"20px 24px",overflowY:"auto",flex:1}}>
         <div style={{display:"flex",gap:10,marginBottom:20,flexWrap:"wrap"}}>
-          <Stat n={urgent.length}  label="Needs attention"/>
-          <Stat n={current.length} label="Current"/>
-          <Stat n={unset.length}   label="No date set"/>
+          <Stat n={urgent.length}       label="Needs attention"/>
+          <Stat n={current.length}      label="Current"/>
+          <Stat n={allTracked.length}   label="Docs tracked" accent/>
         </div>
-        {clients.map(c=>(
+        {clients.map(c=>{
+          const fields = uploadedFields(c.id);
+          return (
           <div key={c.id} style={S.card}>
             <div style={S.cardHead}>
               <Avatar name={c.name} size={24}/>
               <span style={{fontSize:13,fontWeight:500,color:C.text}}>{c.name}</span>
+              <span style={{fontSize:11,color:C.textMut,marginLeft:"auto"}}>{fields.length} document{fields.length!==1?"s":""} on file</span>
             </div>
             <div style={{padding:"2px 16px 8px"}}>
-              {EXPIRY_FIELDS.map(field=>{
+              {fields.length===0 && (
+                <p style={{fontSize:13,color:C.textMut,fontStyle:"italic",padding:"12px 0"}}>
+                  No expiry-tracked documents uploaded yet for this client.
+                </p>
+              )}
+              {fields.map(field=>{
                 const date = expiries[c.id]?.[field]||"";
                 const days = daysDiff(date);
+                const docStatus = CATEGORIES.map(cat=>docs[c.id]?.[cat.key]?.[field]).find(Boolean)?.status;
                 return (
                   <div key={field} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 0",borderBottom:`0.5px solid ${C.border}`,flexWrap:"wrap"}}>
-                    <span style={{flex:1,fontSize:13,color:C.text}}>{field}</span>
+                    <div style={{flex:1}}>
+                      <span style={{fontSize:13,color:C.text}}>{field}</span>
+                      {docStatus && <span style={{...S.badge(docStatus),marginLeft:8}}>{docStatus}</span>}
+                    </div>
                     <input type="date" style={{...S.select,padding:"4px 8px",fontSize:11}}
                       value={date} onChange={e=>setExp(c.id,field,e.target.value)}/>
                     {days!==null && (
@@ -652,7 +682,8 @@ function ComplianceView({ clients }) {
               })}
             </div>
           </div>
-        ))}
+          );
+        })}
       </div>
     </>
   );
@@ -784,6 +815,8 @@ const NAV = [
 export default function App() {
   const [view, setView]       = useState("dashboard");
   const [clients, setClients] = useState(INIT_CLIENTS);
+  const [docs, setDocs]       = useState({});
+  const [expiries, setExpiries] = useState({});
 
   return (
     <div style={{fontFamily:"var(--font-sans, system-ui, sans-serif)",background:C.bgPage,
@@ -838,12 +871,12 @@ export default function App() {
         {/* Main */}
         <div style={{flex:1,display:"flex",flexDirection:"column",minWidth:0,background:C.bgPage}}>
           <div style={{background:C.bg,flex:1,display:"flex",flexDirection:"column",margin:0,minHeight:0,overflowY:"hidden"}}>
-            {view==="dashboard"  && <Dashboard         clients={clients}/>}
+            {view==="dashboard"  && <Dashboard         clients={clients} docs={docs}/>}
             {view==="clients"    && <ClientsView       clients={clients} setClients={setClients}/>}
             {view==="redfolder"  && <RedFolderView     clients={clients} setClients={setClients}/>}
-            {view==="documents"  && <DocumentsView     clients={clients}/>}
-            {view==="compliance" && <ComplianceView    clients={clients}/>}
-            {view==="delivery"   && <VaultDeliveryView clients={clients}/>}
+            {view==="documents"  && <DocumentsView     clients={clients} docs={docs} setDocs={setDocs} expiries={expiries} setExpiries={setExpiries}/>}
+            {view==="compliance" && <ComplianceView    clients={clients} docs={docs} expiries={expiries} setExpiries={setExpiries}/>}
+            {view==="delivery"   && <VaultDeliveryView clients={clients} docs={docs}/>}
           </div>
         </div>
       </div>
