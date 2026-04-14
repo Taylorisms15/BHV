@@ -86,13 +86,13 @@ const S = {
 // ── Data ──────────────────────────────────────────────────────────────────────
 const STAGES = ["Inquiry","Consultation","Audit Scheduled","Active Retainer"];
 const CATEGORIES = [
-  { key:"estate",   label:"Estate",              icon:"⚖",
+  { key:"estate",   label:"Estate",              icon:"Est",
     fields:["Trust Agreement","Last Will & Testament","Codicil","Letter of Instruction"] },
-  { key:"identity", label:"Identity",             icon:"🪪",
+  { key:"identity", label:"Identity",             icon:"ID",
     fields:["Passport","Global Entry Card","Birth Certificate","Marriage Certificate"] },
-  { key:"property", label:"Property",             icon:"🏠",
+  { key:"property", label:"Property",             icon:"Prop",
     fields:["Property Deed","Yacht / Boat Title","Vehicle Title","Homestead Declaration"] },
-  { key:"health",   label:"Health & Directives",  icon:"🩺",
+  { key:"health",   label:"Health & Directives",  icon:"Hlth",
     fields:["Living Will / Medical Directive","Healthcare Power of Attorney","HIPAA Authorization","DNR Order"] },
 ];
 const ALL_FIELDS = CATEGORIES.flatMap(c=>c.fields.map(f=>({catKey:c.key,fieldName:f})));
@@ -112,7 +112,7 @@ const INIT_CLIENTS = [
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const ts = ()=>new Date().toLocaleString("en-US",{month:"short",day:"numeric",year:"numeric",hour:"numeric",minute:"2-digit"});
-const fileIcon = n => { const e=(n||"").split(".").pop().toLowerCase(); return e==="pdf"?"📄":["jpg","jpeg","png","webp"].includes(e)?"🖼":"📎"; };
+const fileIcon = n => { const e=(n||"").split(".").pop().toLowerCase(); return e==="pdf"?"PDF":["jpg","jpeg","png","webp"].includes(e)?"IMG":"DOC"; };
 const daysDiff = d => d ? Math.ceil((new Date(d)-new Date())/86400000) : null;
 const initials = name => name.split(" ").filter(w=>w!=="&").map(w=>w[0]).filter((_,i,a)=>i===0||i===a.length-1).join("");
 
@@ -619,7 +619,7 @@ function DocumentsView({ clients, setClients, docs, setDocs, expiries, setExpiri
                       accurate, and complete copy thereof.
                     </p>
                     <div style={{borderTop:`1px solid ${C.success}`,paddingTop:10,display:"flex",alignItems:"center",gap:12}}>
-                      <div style={{width:32,height:32,borderRadius:4,background:"#1a3a2a",display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontSize:14,flexShrink:0}}>🏛</div>
+                      <div style={{width:32,height:32,borderRadius:4,background:"#1a3a2a",display:"flex",alignItems:"center",justifyContent:"center",color:"#a0d4b8",fontSize:11,fontWeight:700,flexShrink:0,letterSpacing:"-0.5px"}}>FL</div>
                       <div style={{fontSize:11,color:C.success,lineHeight:1.6}}>
                         <strong>Mark Paul Taylor</strong><br/>
                         Notary Public · State of Florida<br/>
