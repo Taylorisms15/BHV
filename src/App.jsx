@@ -9,14 +9,14 @@ const goldBd = "#c4a465";
 
 // All surfaces use CSS vars for light/dark compatibility
 const C = {
-  bg:       "var(--color-background-primary)",
-  bgSurf:   "var(--color-background-secondary)",
-  bgPage:   "var(--color-background-tertiary)",
-  border:   "var(--color-border-tertiary)",
-  borderMd: "var(--color-border-secondary)",
-  text:     "var(--color-text-primary)",
-  textSub:  "var(--color-text-secondary)",
-  textMut:  "var(--color-text-tertiary)",
+  bg:       "#ffffff",
+  bgSurf:   "#f5f3ef",
+  bgPage:   "#eceae5",
+  border:   "#e0ddd7",
+  borderMd: "#cbc8c1",
+  text:     "#1a1917",
+  textSub:  "#5a5855",
+  textMut:  "#9a9895",
   success:  "#2a7a4b",
   successBg:"#e6f4ec",
   danger:   "#a32d2d",
@@ -34,9 +34,9 @@ const S = {
   btn:(v="default",sm=false)=>({
     display:"inline-flex",alignItems:"center",gap:5,
     padding: sm ? "4px 10px" : "7px 14px",
-    border: v==="gold" ? `0.5px solid ${goldBd}` : "0.5px solid var(--color-border-secondary)",
+    border: v==="gold" ? `0.5px solid ${goldBd}` : "0.5px solid #cbc8c1",
     borderRadius:6, cursor:"pointer", fontSize: sm?11:12,
-    fontFamily:"var(--font-sans)", fontWeight:500,
+    fontFamily:"system-ui, -apple-system, sans-serif", fontWeight:500,
     background: v==="gold"   ? "transparent"      :
                 v==="danger" ? C.dangerBg          :
                 v==="success"? C.successBg         : "transparent",
@@ -45,31 +45,31 @@ const S = {
                  v==="success"? C.success           : C.textSub,
   }),
   input:{
-    width:"100%", border:"0.5px solid var(--color-border-secondary)",
+    width:"100%", border:"0.5px solid #cbc8c1",
     borderRadius:6, padding:"7px 10px", fontSize:13,
-    fontFamily:"var(--font-sans)", color:C.text,
+    fontFamily:"system-ui, -apple-system, sans-serif", color:C.text,
     background:C.bg, boxSizing:"border-box",
   },
   select:{
-    border:"0.5px solid var(--color-border-secondary)", borderRadius:6,
-    padding:"6px 10px", fontSize:12, fontFamily:"var(--font-sans)",
+    border:"0.5px solid #cbc8c1", borderRadius:6,
+    padding:"6px 10px", fontSize:12, fontFamily:"system-ui, -apple-system, sans-serif",
     color:C.text, background:C.bg, cursor:"pointer",
   },
   card:{
     background:C.bg,
-    border:"0.5px solid var(--color-border-tertiary)",
+    border:"0.5px solid #e0ddd7",
     borderRadius:12, overflow:"hidden", marginBottom:10,
   },
   cardHead:{
     padding:"11px 16px",
     background:C.cardHead,
-    borderBottom:"0.5px solid var(--color-border-tertiary)",
+    borderBottom:"0.5px solid #e0ddd7",
     display:"flex", alignItems:"center", gap:9,
   },
   label:{
     fontSize:10, color:C.textMut, letterSpacing:"0.1em",
     textTransform:"uppercase", display:"block", marginBottom:5,
-    fontFamily:"var(--font-sans)",
+    fontFamily:"system-ui, -apple-system, sans-serif",
   },
   badge:(v)=>({
     fontSize:10, fontWeight:500, padding:"2px 8px",
@@ -359,7 +359,7 @@ function RedFolderView({ clients, setClients }) {
 // ══════════════════════════════════════════════════════════════════════════════
 //  DOCUMENTS — UPLOAD & CERTIFY
 // ══════════════════════════════════════════════════════════════════════════════
-function DocumentsView({ clients, docs, setDocs, expiries, setExpiries }) {
+function DocumentsView({ clients, setClients, docs, setDocs, expiries, setExpiries }) {
   const [selId, setSelId]           = useState(clients[0]?.id||"");
   const [expanded, setExpanded]     = useState({estate:true,identity:false,property:false,health:false});
   const [reviewTarget, setReview]   = useState(null);
@@ -407,6 +407,11 @@ function DocumentsView({ clients, docs, setDocs, expiries, setExpiries }) {
     const {ck,fn}=reviewTarget, doc=getDoc(ck,fn);
     setDoc(ck,fn,{...doc,status:"certified",certifiedAt:ts(),note:opNote});
     if (opExpiry) setExpiries(p=>({...p,[selId]:{...p[selId],[fn]:opExpiry}}));
+    // Auto-check Red Folder
+    setClients(p=>p.map(c=>{
+      if (c.id!==selId) return c;
+      return {...c, checklist:{...c.checklist,[ck]:{...c.checklist[ck],[fn]:true}}};
+    }));
     addLog(`✦ Certified: "${fn}" — ${client.name}`,C.success);
     closeReview();
   };
@@ -819,7 +824,7 @@ export default function App() {
   const [expiries, setExpiries] = useState({});
 
   return (
-    <div style={{fontFamily:"var(--font-sans, system-ui, sans-serif)",background:C.bgPage,
+    <div style={{fontFamily:"system-ui, -apple-system, sans-serif",background:C.bgPage,
       minHeight:"100vh",display:"flex",flexDirection:"column"}}>
 
       {/* Top bar */}
@@ -874,7 +879,7 @@ export default function App() {
             {view==="dashboard"  && <Dashboard         clients={clients} docs={docs}/>}
             {view==="clients"    && <ClientsView       clients={clients} setClients={setClients}/>}
             {view==="redfolder"  && <RedFolderView     clients={clients} setClients={setClients}/>}
-            {view==="documents"  && <DocumentsView     clients={clients} docs={docs} setDocs={setDocs} expiries={expiries} setExpiries={setExpiries}/>}
+            {view==="documents"  && <DocumentsView     clients={clients} setClients={setClients} docs={docs} setDocs={setDocs} expiries={expiries} setExpiries={setExpiries}/>}
             {view==="compliance" && <ComplianceView    clients={clients} docs={docs} expiries={expiries} setExpiries={setExpiries}/>}
             {view==="delivery"   && <VaultDeliveryView clients={clients} docs={docs}/>}
           </div>
