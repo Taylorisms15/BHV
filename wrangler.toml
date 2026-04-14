@@ -1,0 +1,7 @@
+name = "bhv-api"
+main = "worker/index.js"
+compatibility_date = "2024-01-01"
+
+[[r2_buckets]]
+binding = "BHV_BUCKET"
+bucket_name = "bhv-documents"
