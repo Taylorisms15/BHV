@@ -360,16 +360,302 @@ function RedFolderView({ clients, setClients }) {
 //  DOCUMENTS — UPLOAD & CERTIFY
 // ══════════════════════════════════════════════════════════════════════════════
 function DocumentsView({ clients, setClients, docs, setDocs, expiries, setExpiries }) {
-  const [selId, setSelId]           = useState(clients[0]?.id||"");
-  const [expanded, setExpanded]     = useState({estate:true,identity:false,property:false,health:false});
-  const [reviewTarget, setReview]   = useState(null);
-  const [opNote, setOpNote]         = useState("");
-  const [opExpiry, setOpExpiry]     = useState("");
-  const [dragOver, setDragOver]     = useState(null);
-  const [pendingUp, setPending]     = useState(null);
-  const [linkEdits, setLinkEdits]   = useState({});
-  const [log, setLog]               = useState([]);
+  const [selId, setSelId]       = useState(clients[0]?.id||"");
+  const [expanded, setExpanded] = useState({estate:true,identity:false,property:false,health:false});
+  const [reviewTarget, setReview] = useState(null); // {ck, fn, idx}
+  const [opNote, setOpNote]     = useState("");
+  const [opExpiry, setOpExpiry] = useState("");
+  const [dragOver, setDragOver] = useState(null);
+  const [pendingUp, setPending] = useState(null);   // {ck, fn, idx|null}
+  const [linkEdits, setLinkEdits] = useState({});
+  const [log, setLog]           = useState([]);
   const fileRef = useRef();
+
+  const client = clients.find(c=>c.id===selId);
+
+  // Docs stored as arrays: docs[clientId][catKey][fieldName] = [docObj, ...]
+  const getDocs  = (ck,fn) => docs[selId]?.[ck]?.[fn] || [];
+  const setField = (ck,fn,arr) => setDocs(p=>({...p,[selId]:{...p[selId],[ck]:{...p[selId]?.[ck],[fn]:arr}}}));
+  const updateDoc = (ck,fn,idx,patch) => {
+    const arr = [...getDocs(ck,fn)];
+    arr[idx] = {...arr[idx],...patch};
+    setField(ck,fn,arr);
+  };
+  const removeDoc = (ck,fn,idx) => {
+    const arr = getDocs(ck,fn).filter((_,i)=>i!==idx);
+    setField(ck,fn,arr);
+  };
+  const addLog = (t,color=gold) => setLog(p=>[{t,color,time:ts()},...p].slice(0,40));
+  const lk = (ck,fn,idx) => `${selId}-${ck}-${fn}-${idx}`;
+
+  const handleFiles = (ck,fn,files,replaceIdx=null) => {
+    const file=files[0]; if (!file) return;
+    const r=new FileReader();
+    r.onload=e=>{
+      const newDoc = {id:`d${Date.now()}`,status:"uploaded",name:file.name,size:file.size,
+        dataUrl:e.target.result,uploadedAt:ts(),vaultLink:"",certifiedAt:null,note:""};
+      if (replaceIdx!==null) {
+        updateDoc(ck,fn,replaceIdx,{...newDoc,vaultLink:getDocs(ck,fn)[replaceIdx]?.vaultLink||""});
+      } else {
+        setField(ck,fn,[...getDocs(ck,fn),newDoc]);
+      }
+      addLog(`Uploaded "${file.name}" → ${fn}`,C.warn);
+    };
+    r.readAsDataURL(file);
+  };
+
+  const triggerUpload = (ck,fn,replaceIdx=null) => {
+    setPending({ck,fn,replaceIdx});
+    fileRef.current.value="";
+    fileRef.current.click();
+  };
+
+  const saveLink = (ck,fn,idx) => {
+    const key = lk(ck,fn,idx);
+    const link = linkEdits[key] ?? getDocs(ck,fn)[idx]?.vaultLink ?? "";
+    updateDoc(ck,fn,idx,{vaultLink:link});
+    if (link) addLog(`Vault link saved — ${fn}`,C.success);
+  };
+
+  const openReview = (ck,fn,idx) => {
+    setReview({ck,fn,idx});
+    const existing = getDocs(ck,fn)[idx]?.note||"";
+    setOpNote(existing || "Original verified in-person · Commission No. HH 427659 · Expires 7/30/2027");
+    setOpExpiry(expiries[selId]?.[`${fn}__${idx}`]||expiries[selId]?.[fn]||"");
+  };
+  const closeReview = () => { setReview(null); setOpNote(""); setOpExpiry(""); };
+
+  const certify = () => {
+    const {ck,fn,idx}=reviewTarget;
+    updateDoc(ck,fn,idx,{status:"certified",certifiedAt:ts(),note:opNote});
+    if (opExpiry) setExpiries(p=>({...p,[selId]:{...p[selId],[`${fn}__${idx}`]:opExpiry}}));
+    setClients(p=>p.map(c=>{
+      if (c.id!==selId) return c;
+      return {...c,checklist:{...c.checklist,[ck]:{...c.checklist[ck],[fn]:true}}};
+    }));
+    addLog(`✦ Certified: "${fn}" — ${client.name}`,C.success);
+    closeReview();
+  };
+  const returnDoc = () => {
+    const {ck,fn,idx}=reviewTarget;
+    updateDoc(ck,fn,idx,{status:"returned",note:opNote});
+    addLog(`Returned: "${fn}" — ${client.name}`,C.danger);
+    closeReview();
+  };
+
+  // Flatten all docs for stats
+  const allDocs = ALL_FIELDS.flatMap(({catKey,fieldName})=>getDocs(catKey,fieldName));
+  const nCert   = allDocs.filter(d=>d.status==="certified").length;
+  const nUp     = allDocs.filter(d=>d.status==="uploaded").length;
+  const nLink   = allDocs.filter(d=>d.vaultLink).length;
+
+  if (!client) return null;
+
+  // Review modal doc
+  const reviewDoc = reviewTarget ? getDocs(reviewTarget.ck,reviewTarget.fn)[reviewTarget.idx] : null;
+
+  return (
+    <>
+      <input type="file" ref={fileRef} style={{display:"none"}}
+        onChange={e=>{
+          if(pendingUp) handleFiles(pendingUp.ck,pendingUp.fn,e.target.files,pendingUp.replaceIdx);
+          setPending(null);
+        }}
+        accept=".pdf,.jpg,.jpeg,.png,.webp,.doc,.docx"/>
+
+      <PageHeader title="Upload & Certify" sub={client.name}>
+        <select style={S.select} value={selId} onChange={e=>setSelId(e.target.value)}>
+          {clients.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+      </PageHeader>
+
+      <div style={{padding:"20px 24px",overflowY:"auto",flex:1}}>
+        <div style={{display:"flex",gap:10,marginBottom:20,flexWrap:"wrap"}}>
+          <Stat n={allDocs.length} label="Total documents" accent />
+          <Stat n={nUp}            label="Awaiting review" />
+          <Stat n={nCert}          label="Certified" />
+          <Stat n={nLink}          label="Vault links" />
+        </div>
+
+        {CATEGORIES.map(cat=>{
+          const catDocs = cat.fields.flatMap(f=>getDocs(cat.key,f));
+          const catCert = catDocs.filter(d=>d.status==="certified").length;
+          const open    = expanded[cat.key];
+          return (
+            <div key={cat.key} style={S.card}>
+              <div style={{...S.cardHead,cursor:"pointer"}}
+                onClick={()=>setExpanded(p=>({...p,[cat.key]:!p[cat.key]}))}>
+                <span style={{color:gold,fontSize:14}}>{cat.icon}</span>
+                <span style={{fontSize:13,fontWeight:500,color:C.text,flex:1}}>{cat.label}</span>
+                <span style={{fontSize:11,color:catCert>0?C.success:C.textSub,background:C.bgSurf,padding:"2px 8px",borderRadius:8}}>
+                  {catCert} certified · {catDocs.length} total
+                </span>
+                <span style={{fontSize:10,color:C.textMut,marginLeft:6}}>{open?"▲":"▼"}</span>
+              </div>
+              {open && (
+                <div style={{padding:"2px 16px 8px"}}>
+                  {cat.fields.map(fieldName=>{
+                    const fieldDocs = getDocs(cat.key,fieldName);
+                    const dk = `${cat.key}-${fieldName}`;
+                    return (
+                      <div key={fieldName} style={{borderBottom:`1px solid ${C.border}`,padding:"12px 0"}}>
+                        {/* Field header */}
+                        <div style={{display:"flex",alignItems:"center",gap:9,marginBottom:fieldDocs.length>0?10:0}}>
+                          <span style={{fontSize:13,fontWeight:500,color:C.text,flex:1}}>{fieldName}</span>
+                          <button style={S.btn("gold",true)}
+                            onDragOver={e=>{e.preventDefault();setDragOver(dk);}}
+                            onDragLeave={()=>setDragOver(null)}
+                            onDrop={e=>{e.preventDefault();setDragOver(null);handleFiles(cat.key,fieldName,e.dataTransfer.files);}}
+                            onClick={()=>triggerUpload(cat.key,fieldName)}>
+                            + Add document
+                          </button>
+                        </div>
+
+                        {/* No docs yet */}
+                        {fieldDocs.length===0 && (
+                          <div style={{border:`1px dashed ${dragOver===dk?goldBd:C.borderMd}`,borderRadius:6,
+                            padding:"10px 14px",textAlign:"center",cursor:"pointer",
+                            background:dragOver===dk?goldBg:C.bgSurf,transition:"all 0.12s"}}
+                            onDragOver={e=>{e.preventDefault();setDragOver(dk);}}
+                            onDragLeave={()=>setDragOver(null)}
+                            onDrop={e=>{e.preventDefault();setDragOver(null);handleFiles(cat.key,fieldName,e.dataTransfer.files);}}
+                            onClick={()=>triggerUpload(cat.key,fieldName)}>
+                            <span style={{fontSize:12,color:C.textSub}}>Drop file or <span style={{color:gold,fontWeight:500}}>browse</span></span>
+                          </div>
+                        )}
+
+                        {/* Each uploaded doc */}
+                        {fieldDocs.map((doc,idx)=>{
+                          const key = lk(cat.key,fieldName,idx);
+                          const linkv = linkEdits[key]??doc.vaultLink??"";
+                          return (
+                            <div key={doc.id||idx} style={{background:C.bgSurf,border:`1px solid ${C.border}`,borderRadius:8,padding:"10px 13px",marginBottom:8}}>
+                              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6,flexWrap:"wrap"}}>
+                                <span style={{fontSize:15}}>{fileIcon(doc.name)}</span>
+                                <span style={{fontSize:13,color:C.text,flex:1,fontWeight:500}}>{doc.name}</span>
+                                <Badge status={doc.status}/>
+                              </div>
+                              <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",marginBottom:6}}>
+                                <span style={{fontSize:11,color:C.textMut}}>{(doc.size/1024).toFixed(0)} KB · {doc.uploadedAt}</span>
+                                {doc.status==="certified" && <span style={{fontSize:11,color:C.success,fontWeight:500}}>✦ {doc.certifiedAt}</span>}
+                                {doc.status==="uploaded"  && <button style={S.btn("gold",true)} onClick={()=>openReview(cat.key,fieldName,idx)}>Review & certify</button>}
+                                {doc.status==="certified" && <button style={S.btn("default",true)} onClick={()=>openReview(cat.key,fieldName,idx)}>View cert.</button>}
+                                {doc.status==="returned"  && <button style={S.btn("default",true)} onClick={()=>triggerUpload(cat.key,fieldName,idx)}>Re-upload</button>}
+                                <button style={S.btn("default",true)} onClick={()=>triggerUpload(cat.key,fieldName,idx)}>Replace</button>
+                                <button style={{...S.btn("danger",true),marginLeft:"auto"}} onClick={()=>removeDoc(cat.key,fieldName,idx)}>Remove</button>
+                              </div>
+                              {doc.note && <p style={{fontSize:11,color:C.textSub,fontStyle:"italic",marginBottom:6}}>{doc.note}</p>}
+                              <div style={{display:"flex",gap:7}}>
+                                <input style={{...S.input,padding:"5px 9px",fontSize:12}}
+                                  placeholder="Paste vault link (Tresorit, Dropbox…)"
+                                  value={linkv}
+                                  onChange={e=>setLinkEdits(p=>({...p,[key]:e.target.value}))}
+                                  onBlur={()=>saveLink(cat.key,fieldName,idx)}/>
+                                <button style={S.btn(doc.vaultLink?"success":"default",true)} onClick={()=>saveLink(cat.key,fieldName,idx)}>
+                                  {doc.vaultLink?"✓ Linked":"Save"}
+                                </button>
+                                {doc.vaultLink && <a href={doc.vaultLink} target="_blank" rel="noreferrer"
+                                  style={{...S.btn("default",true),textDecoration:"none"}}>Open ↗</a>}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
+
+        {log.length>0 && (
+          <div style={{background:"#eceae5",border:"1px solid #dedad3",borderRadius:8,padding:"14px 16px",marginTop:8}}>
+            <p style={{...S.label,marginBottom:10}}>Activity log</p>
+            {log.slice(0,8).map((e,i)=>(
+              <div key={i} style={{display:"flex",gap:10,padding:"7px 0",borderBottom:`0.5px solid ${C.border}`}}>
+                <div style={{width:6,height:6,borderRadius:"50%",background:e.color,marginTop:5,flexShrink:0}}/>
+                <span style={{fontSize:12,color:C.text,flex:1}}>{e.t}</span>
+                <span style={{fontSize:11,color:C.textMut,whiteSpace:"nowrap"}}>{e.time}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Certification modal */}
+      {reviewTarget && reviewDoc && (()=>{
+        const {ck,fn,idx}=reviewTarget;
+        const doc=reviewDoc;
+        const isImg = ["jpg","jpeg","png","webp"].some(e=>doc.name.toLowerCase().endsWith(e));
+        const isPDF = doc.name.toLowerCase().endsWith(".pdf");
+        return (
+          <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.35)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000,padding:16}}
+            onClick={closeReview}>
+            <div style={{background:C.bg,borderRadius:12,width:520,maxWidth:"100%",overflow:"hidden",border:`1px solid ${C.borderMd}`,maxHeight:"90vh",overflowY:"auto"}}
+              onClick={e=>e.stopPropagation()}>
+              <div style={{padding:"16px 20px",borderBottom:`1px solid ${C.border}`,display:"flex",alignItems:"center",justifyContent:"space-between",position:"sticky",top:0,background:C.bg,zIndex:1}}>
+                <div>
+                  <p style={{fontSize:15,fontWeight:500,color:C.text,margin:0}}>Certification review</p>
+                  <p style={{fontSize:11,color:C.textSub,marginTop:2}}>{fn} · {client.name}</p>
+                </div>
+                <button style={{...S.btn("default",true),borderRadius:"50%",padding:"4px 8px"}} onClick={closeReview}>✕</button>
+              </div>
+              <div style={{padding:20}}>
+                <div style={{background:"#eceae5",borderRadius:8,padding:12,marginBottom:16,textAlign:"center",border:"1px solid #dedad3",maxHeight:220,overflow:"hidden"}}>
+                  {isImg
+                    ? <img src={doc.dataUrl} alt={doc.name} style={{maxWidth:"100%",maxHeight:200,objectFit:"contain",borderRadius:4}}/>
+                    : isPDF
+                    ? <iframe src={doc.dataUrl} title="preview" style={{width:"100%",height:200,border:"none",borderRadius:4}}/>
+                    : <div style={{padding:"24px 0"}}><div style={{fontSize:32}}>{fileIcon(doc.name)}</div><p style={{color:C.textSub,fontSize:13,marginTop:8}}>{doc.name}</p></div>
+                  }
+                </div>
+                {doc.status==="certified" && (
+                  <div style={{border:`1px solid ${C.success}`,borderRadius:8,padding:"14px 16px",background:C.successBg,marginBottom:16}}>
+                    <p style={{fontSize:10,fontWeight:500,letterSpacing:"0.08em",textTransform:"uppercase",color:C.success,marginBottom:8}}>✦ Certified True Copy</p>
+                    <p style={{fontSize:12,color:C.text,lineHeight:1.75,margin:"0 0 12px"}}>
+                      I certify that on {doc.certifiedAt}, I, a notary public of the State of Florida, personally
+                      reviewed the original document presented by {client.name} and that this is a true,
+                      accurate, and complete copy thereof.
+                    </p>
+                    <div style={{borderTop:`1px solid ${C.success}`,paddingTop:10,display:"flex",alignItems:"center",gap:12}}>
+                      <div style={{width:32,height:32,borderRadius:4,background:"#1a3a2a",display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontSize:14,flexShrink:0}}>🏛</div>
+                      <div style={{fontSize:11,color:C.success,lineHeight:1.6}}>
+                        <strong>Mark Paul Taylor</strong><br/>
+                        Notary Public · State of Florida<br/>
+                        Commission No. HH 427659 · Expires 7/30/2027
+                      </div>
+                    </div>
+                  </div>
+                )}
+                <div style={{marginBottom:14}}>
+                  <label style={S.label}>Document expiry <span style={{textTransform:"none",letterSpacing:0,color:C.textMut}}>(auto-populates Compliance)</span></label>
+                  <input type="date" style={{...S.input,maxWidth:220}} value={opExpiry} onChange={e=>setOpExpiry(e.target.value)}/>
+                </div>
+                <div style={{marginBottom:16}}>
+                  <label style={S.label}>Notary note <span style={{textTransform:"none",letterSpacing:0,color:C.textMut}}>(optional)</span></label>
+                  <textarea value={opNote} onChange={e=>setOpNote(e.target.value)}
+                    placeholder="e.g. Original verified in-person · Additional observations"
+                    style={{...S.input,minHeight:64,resize:"vertical"}}/>
+                </div>
+                <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+                  {doc.status!=="certified" && <>
+                    <button style={S.btn("danger")} onClick={returnDoc}>Return for re-upload</button>
+                    <button style={{...S.btn("gold"),background:goldBg}} onClick={certify}>✦ Certify document</button>
+                  </>}
+                  {doc.status==="certified" && <>
+                    <button style={S.btn()} onClick={closeReview}>Close</button>
+                    <button style={S.btn("danger")} onClick={returnDoc}>Revoke & return</button>
+                  </>}
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+    </>
+  );
+}
 
   const client   = clients.find(c=>c.id===selId);
   const getDoc   = (ck,fn) => docs[selId]?.[ck]?.[fn]||null;
@@ -403,220 +689,6 @@ function DocumentsView({ clients, setClients, docs, setDocs, expiries, setExpiri
   };
   const closeReview = () => { setReview(null); setOpNote(""); setOpExpiry(""); };
 
-  const certify = () => {
-    const {ck,fn}=reviewTarget, doc=getDoc(ck,fn);
-    setDoc(ck,fn,{...doc,status:"certified",certifiedAt:ts(),note:opNote});
-    if (opExpiry) setExpiries(p=>({...p,[selId]:{...p[selId],[fn]:opExpiry}}));
-    // Auto-check Red Folder
-    setClients(p=>p.map(c=>{
-      if (c.id!==selId) return c;
-      return {...c, checklist:{...c.checklist,[ck]:{...c.checklist[ck],[fn]:true}}};
-    }));
-    addLog(`✦ Certified: "${fn}" — ${client.name}`,C.success);
-    closeReview();
-  };
-  const returnDoc = () => {
-    const {ck,fn}=reviewTarget, doc=getDoc(ck,fn);
-    setDoc(ck,fn,{...doc,status:"returned",note:opNote});
-    addLog(`Returned: "${fn}" — ${client.name}`,C.danger);
-    closeReview();
-  };
-
-  const allDocs  = ALL_FIELDS.map(({catKey,fieldName})=>getDoc(catKey,fieldName)).filter(Boolean);
-  const nCert    = allDocs.filter(d=>d.status==="certified").length;
-  const nUp      = allDocs.filter(d=>d.status==="uploaded").length;
-  const nLink    = allDocs.filter(d=>d.vaultLink).length;
-
-  if (!client) return null;
-
-  return (
-    <>
-      <input type="file" ref={fileRef} style={{display:"none"}}
-        onChange={e=>{if(pendingUp)handleFiles(pendingUp.ck,pendingUp.fn,e.target.files);setPending(null);}}
-        accept=".pdf,.jpg,.jpeg,.png,.webp,.doc,.docx"/>
-
-      <PageHeader title="Upload & Certify" sub={`${client.name}`}>
-        <select style={S.select} value={selId} onChange={e=>setSelId(e.target.value)}>
-          {clients.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
-        </select>
-      </PageHeader>
-
-      <div style={{padding:"20px 24px",overflowY:"auto",flex:1}}>
-        <div style={{display:"flex",gap:10,marginBottom:20,flexWrap:"wrap"}}>
-          <Stat n={`${allDocs.length}/${ALL_FIELDS.length}`} label="Uploaded" accent />
-          <Stat n={nUp}   label="Awaiting review" />
-          <Stat n={nCert} label="Certified" />
-          <Stat n={nLink} label="Vault links" />
-        </div>
-
-        {CATEGORIES.map(cat=>{
-          const catDocs = Object.values(docs[selId]?.[cat.key]||{});
-          const catCert = catDocs.filter(d=>d.status==="certified").length;
-          const open    = expanded[cat.key];
-          return (
-            <div key={cat.key} style={S.card}>
-              <div style={{...S.cardHead,cursor:"pointer"}}
-                onClick={()=>setExpanded(p=>({...p,[cat.key]:!p[cat.key]}))}>
-                <span style={{color:gold,fontSize:14}}>{cat.icon}</span>
-                <span style={{fontSize:13,fontWeight:500,color:C.text,flex:1}}>{cat.label}</span>
-                <span style={{fontSize:11,color:catCert===cat.fields.length?C.success:C.textSub,background:C.bgSurf,padding:"2px 8px",borderRadius:8}}>
-                  {catCert} / {cat.fields.length} certified
-                </span>
-                <span style={{fontSize:10,color:C.textMut,marginLeft:6}}>{open?"▲":"▼"}</span>
-              </div>
-              {open && (
-                <div style={{padding:"2px 16px 8px"}}>
-                  {cat.fields.map(fieldName=>{
-                    const doc   = getDoc(cat.key,fieldName);
-                    const dk    = `${cat.key}-${fieldName}`;
-                    const linkv = linkEdits[lk(cat.key,fieldName)]??doc?.vaultLink??"";
-                    return (
-                      <div key={fieldName} style={{borderBottom:`0.5px solid ${C.border}`,padding:"11px 0"}}>
-                        <div style={{display:"flex",alignItems:"center",gap:9,flexWrap:"wrap"}}>
-                          <span style={{fontSize:15,flexShrink:0}}>{doc?fileIcon(doc.name):"○"}</span>
-                          <span style={{fontSize:13,color:C.text,flex:1}}>{fieldName}</span>
-                          <Badge status={doc?.status||"none"}/>
-                        </div>
-
-                        {!doc && (
-                          <div style={{border:`0.5px dashed ${dragOver===dk?goldBd:C.borderMd}`,borderRadius:6,
-                            padding:"10px 14px",textAlign:"center",cursor:"pointer",
-                            background:dragOver===dk?goldBg:C.bgSurf,marginTop:9,transition:"all 0.12s"}}
-                            onDragOver={e=>{e.preventDefault();setDragOver(dk);}}
-                            onDragLeave={()=>setDragOver(null)}
-                            onDrop={e=>{e.preventDefault();setDragOver(null);handleFiles(cat.key,fieldName,e.dataTransfer.files);}}
-                            onClick={()=>triggerUpload(cat.key,fieldName)}>
-                            <span style={{fontSize:12,color:C.textSub}}>Drop file or <span style={{color:gold,fontWeight:500}}>browse</span></span>
-                          </div>
-                        )}
-
-                        {doc && (
-                          <div style={{paddingLeft:24,marginTop:7}}>
-                            <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",marginBottom:6}}>
-                              <span style={{fontSize:11,color:C.textMut}}>{doc.name} · {(doc.size/1024).toFixed(0)} KB · {doc.uploadedAt}</span>
-                              {doc.status==="certified" && <span style={{fontSize:11,color:C.success,fontWeight:500}}>✦ {doc.certifiedAt}</span>}
-                              {doc.status==="uploaded"  && <button style={S.btn("gold",true)} onClick={()=>openReview(cat.key,fieldName)}>Review & certify</button>}
-                              {doc.status==="returned"  && <button style={S.btn("default",true)} onClick={()=>triggerUpload(cat.key,fieldName)}>Re-upload</button>}
-                              <button style={S.btn("default",true)} onClick={()=>triggerUpload(cat.key,fieldName)}>Replace</button>
-                            </div>
-                            {doc.note && <p style={{fontSize:11,color:C.textSub,fontStyle:"italic",marginBottom:6}}>{doc.note}</p>}
-                            <div style={{display:"flex",gap:7,marginTop:4}}>
-                              <input style={{...S.input,padding:"5px 9px",fontSize:12}}
-                                placeholder="Paste vault link (Tresorit, Dropbox…)"
-                                value={linkv}
-                                onChange={e=>setLinkEdits(p=>({...p,[lk(cat.key,fieldName)]:e.target.value}))}
-                                onBlur={()=>saveLink(cat.key,fieldName)}/>
-                              <button style={S.btn(doc.vaultLink?"success":"default",true)} onClick={()=>saveLink(cat.key,fieldName)}>
-                                {doc.vaultLink?"✓ Linked":"Save"}
-                              </button>
-                              {doc.vaultLink && <a href={doc.vaultLink} target="_blank" rel="noreferrer"
-                                style={{...S.btn("default",true),textDecoration:"none"}}>Open ↗</a>}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          );
-        })}
-
-        {log.length>0 && (
-          <div style={{background:"#eceae5",border:"1px solid #dedad3",borderRadius:8,padding:"14px 16px",marginTop:8}}>
-            <p style={{...S.label,marginBottom:10}}>Activity log</p>
-            {log.slice(0,8).map((e,i)=>(
-              <div key={i} style={{display:"flex",gap:10,padding:"7px 0",borderBottom:`0.5px solid ${C.border}`}}>
-                <div style={{width:6,height:6,borderRadius:"50%",background:e.color,marginTop:5,flexShrink:0}}/>
-                <span style={{fontSize:12,color:C.text,flex:1}}>{e.t}</span>
-                <span style={{fontSize:11,color:C.textMut,whiteSpace:"nowrap"}}>{e.time}</span>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Certification modal */}
-      {reviewTarget && (()=>{
-        const {ck,fn}=reviewTarget, doc=getDoc(ck,fn);
-        if (!doc) return null;
-        const isImg = ["jpg","jpeg","png","webp"].some(e=>doc.name.toLowerCase().endsWith(e));
-        const isPDF = doc.name.toLowerCase().endsWith(".pdf");
-        return (
-          <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.35)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000,padding:16}}
-            onClick={closeReview}>
-            <div style={{background:C.bg,borderRadius:12,width:520,maxWidth:"100%",overflow:"hidden",border:`0.5px solid ${C.borderMd}`}}
-              onClick={e=>e.stopPropagation()}>
-
-              {/* Modal header */}
-              <div style={{padding:"16px 20px",borderBottom:`0.5px solid ${C.border}`,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-                <div>
-                  <p style={{fontSize:15,fontWeight:500,color:C.text,margin:0}}>Certification review</p>
-                  <p style={{fontSize:11,color:C.textSub,marginTop:2}}>{fn} · {client.name}</p>
-                </div>
-                <button style={{...S.btn("default",true),borderRadius:"50%",padding:"4px 8px"}} onClick={closeReview}>✕</button>
-              </div>
-
-              <div style={{padding:20}}>
-                {/* Preview */}
-                <div style={{background:"#eceae5",borderRadius:8,padding:12,marginBottom:16,textAlign:"center",border:"1px solid #dedad3",maxHeight:220,overflow:"hidden"}}>
-                  {isImg
-                    ? <img src={doc.dataUrl} alt={doc.name} style={{maxWidth:"100%",maxHeight:200,objectFit:"contain",borderRadius:4}}/>
-                    : isPDF
-                    ? <iframe src={doc.dataUrl} title="preview" style={{width:"100%",height:200,border:"none",borderRadius:4}}/>
-                    : <div style={{padding:"24px 0"}}>
-                        <div style={{fontSize:32}}>{fileIcon(doc.name)}</div>
-                        <p style={{color:C.textSub,fontSize:13,marginTop:8}}>{doc.name}</p>
-                      </div>
-                  }
-                </div>
-
-                {/* Certification statement — shown when already certified */}
-                {doc.status==="certified" && (
-                  <div style={{border:`0.5px solid ${C.success}`,borderRadius:8,padding:"14px 16px",background:C.successBg,marginBottom:16}}>
-                    <p style={{fontSize:10,fontWeight:500,letterSpacing:"0.08em",textTransform:"uppercase",color:C.success,marginBottom:6}}>✦ Certified</p>
-                    <p style={{fontSize:12,color:C.text,lineHeight:1.7,margin:0}}>
-                      I certify that on {doc.certifiedAt}, I, a notary public of the State of Florida, personally
-                      reviewed the original document presented by {client.name} and that this is a true,
-                      accurate, and complete copy thereof.
-                    </p>
-                  </div>
-                )}
-
-                {/* Expiry date */}
-                <div style={{marginBottom:14}}>
-                  <label style={S.label}>Document expiry date <span style={{textTransform:"none",letterSpacing:0,color:C.textMut}}>(if applicable — auto-populates Compliance)</span></label>
-                  <input type="date" style={{...S.input,maxWidth:220}}
-                    value={opExpiry} onChange={e=>setOpExpiry(e.target.value)}/>
-                </div>
-
-                {/* Notary note */}
-                <div style={{marginBottom:16}}>
-                  <label style={S.label}>Notary note <span style={{textTransform:"none",letterSpacing:0,color:C.textMut}}>(optional)</span></label>
-                  <textarea value={opNote} onChange={e=>setOpNote(e.target.value)}
-                    placeholder="e.g. Original verified in-person · Commission no. 12345 · Exp. 03/2028"
-                    style={{...S.input,minHeight:64,resize:"vertical"}}/>
-                </div>
-
-                <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
-                  {doc.status!=="certified" && <>
-                    <button style={S.btn("danger")} onClick={returnDoc}>Return for re-upload</button>
-                    <button style={{...S.btn("gold"),background:goldBg}} onClick={certify}>✦ Certify document</button>
-                  </>}
-                  {doc.status==="certified" && <>
-                    <button style={S.btn()} onClick={closeReview}>Close</button>
-                    <button style={S.btn("danger")} onClick={returnDoc}>Revoke & return</button>
-                  </>}
-                </div>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
-    </>
-  );
-}
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  COMPLIANCE
@@ -629,7 +701,7 @@ function ComplianceView({ clients, docs, expiries, setExpiries }) {
   // For a given client, return only fields that have been uploaded
   const uploadedFields = (cid) =>
     EXPIRY_FIELDS.filter(f =>
-      CATEGORIES.some(cat => docs[cid]?.[cat.key]?.[f])
+      CATEGORIES.some(cat => (docs[cid]?.[cat.key]?.[f]||[]).length > 0)
     );
 
   const statusLabel = days => days===null?"—":days<0?"Expired":days<=30?"Expires soon":days<=90?"Review due":"Current";
@@ -668,7 +740,9 @@ function ComplianceView({ clients, docs, expiries, setExpiries }) {
               {fields.map(field=>{
                 const date = expiries[c.id]?.[field]||"";
                 const days = daysDiff(date);
-                const docStatus = CATEGORIES.map(cat=>docs[c.id]?.[cat.key]?.[field]).find(Boolean)?.status;
+                const allFieldDocs = CATEGORIES.flatMap(cat=>docs[c.id]?.[cat.key]?.[field]||[]);
+                const certifiedCount = allFieldDocs.filter(d=>d.status==="certified").length;
+                const docStatus = certifiedCount>0?"certified":allFieldDocs.length>0?"uploaded":null;
                 return (
                   <div key={field} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 0",borderBottom:`0.5px solid ${C.border}`,flexWrap:"wrap"}}>
                     <div style={{flex:1}}>
