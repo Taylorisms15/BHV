@@ -9,9 +9,33 @@ export default {
     if (request.method === "OPTIONS") {
       return new Response(null, { headers: CORS });
     }
-
     const url = new URL(request.url);
     const path = url.pathname;
+
+    // GET /meta?key=xxx
+    if (request.method === "GET" && path === "/meta") {
+      try {
+        const key = url.searchParams.get("key");
+        if (!key) return json({ error: "Missing key" }, 400);
+        const object = await env.BHV_BUCKET.get(`_meta/${key}.json`);
+        if (!object) return json({ data: null }, 200);
+        const text = await object.text();
+        return json({ data: JSON.parse(text) }, 200);
+      } catch (e) { return json({ error: e.message }, 500); }
+    }
+
+    // POST /meta?key=xxx
+    if (request.method === "POST" && path === "/meta") {
+      try {
+        const key = url.searchParams.get("key");
+        if (!key) return json({ error: "Missing key" }, 400);
+        const body = await request.text();
+        await env.BHV_BUCKET.put(`_meta/${key}.json`, body, {
+          httpMetadata: { contentType: "application/json" },
+        });
+        return json({ success: true }, 200);
+      } catch (e) { return json({ error: e.message }, 500); }
+    }
 
     // POST /upload
     if (request.method === "POST" && path === "/upload") {
@@ -32,14 +56,13 @@ export default {
       } catch (e) { return json({ error: e.message }, 500); }
     }
 
-    // POST /extract — extract doc type and expiry via Claude
+    // POST /extract
     if (request.method === "POST" && path === "/extract") {
       try {
         const formData = await request.formData();
         const file = formData.get("file");
         const fileName = formData.get("fileName") || "";
         if (!file) return json({ error: "Missing file" }, 400);
-
         const arrayBuffer = await file.arrayBuffer();
         const bytes = new Uint8Array(arrayBuffer);
         let binary = "";
@@ -47,29 +70,19 @@ export default {
         const base64 = btoa(binary);
         const mimeType = file.type || "image/jpeg";
         const isPDF = mimeType === "application/pdf" || fileName.toLowerCase().endsWith(".pdf");
-
         const prompt = `Examine this document and extract:
 1. Document type (e.g. Passport, Global Entry Card, Driver License, Trust Agreement, Property Deed, Medical Directive, Power of Attorney, etc.)
 2. Expiration or review date if present (format: YYYY-MM-DD)
 3. Full name on the document if present
-
-Respond ONLY with valid JSON, no explanation:
-{"documentType":"...","expiryDate":"YYYY-MM-DD or null","name":"... or null"}`;
-
+Respond ONLY with valid JSON: {"documentType":"...","expiryDate":"YYYY-MM-DD or null","name":"... or null"}`;
         const content = isPDF
           ? [{ type:"document", source:{ type:"base64", media_type:"application/pdf", data:base64 } }, { type:"text", text:prompt }]
           : [{ type:"image",    source:{ type:"base64", media_type:mimeType,            data:base64 } }, { type:"text", text:prompt }];
-
         const claudeResp = await fetch("https://api.anthropic.com/v1/messages", {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-api-key": env.ANTHROPIC_API_KEY,
-            "anthropic-version": "2023-06-01",
-          },
+          headers: { "Content-Type":"application/json", "x-api-key":env.ANTHROPIC_API_KEY, "anthropic-version":"2023-06-01" },
           body: JSON.stringify({ model:"claude-opus-4-5", max_tokens:256, messages:[{ role:"user", content }] }),
         });
-
         const claudeData = await claudeResp.json();
         const text = claudeData.content?.[0]?.text || "{}";
         let extracted = {};
