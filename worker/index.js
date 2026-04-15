@@ -117,6 +117,41 @@ Respond ONLY with valid JSON: {"documentType":"...","expiryDate":"YYYY-MM-DD or 
       } catch (e) { return json({ error: e.message }, 500); }
     }
 
+    // POST /client-upload — store client-encrypted certified doc
+    if (request.method === "POST" && path === "/client-upload") {
+      try {
+        const formData = await request.formData();
+        const file = formData.get("file");
+        const clientId = formData.get("clientId");
+        const fieldName = formData.get("fieldName");
+        const catKey = formData.get("catKey");
+        const fileName = formData.get("fileName");
+        if (!file || !clientId || !fieldName) return json({ error: "Missing required fields" }, 400);
+        const key = `${clientId}/client/${catKey}/${fieldName}/${Date.now()}_${fileName}`;
+        await env.BHV_BUCKET.put(key, file.stream(), {
+          httpMetadata: { contentType: file.type },
+          customMetadata: { clientId, catKey, fieldName, fileName, clientCopy: "true" },
+        });
+        return json({ success: true, key }, 200);
+      } catch (e) { return json({ error: e.message }, 500); }
+    }
+
+    // GET /client-files?clientId=xxx — list client-accessible certified docs
+    if (request.method === "GET" && path === "/client-files") {
+      try {
+        const clientId = url.searchParams.get("clientId");
+        if (!clientId) return json({ error: "Missing clientId" }, 400);
+        const list = await env.BHV_BUCKET.list({ prefix: `${clientId}/client/` });
+        const files = list.objects.map(obj => ({
+          key: obj.key,
+          size: obj.size,
+          uploaded: obj.uploaded,
+          metadata: obj.customMetadata,
+        }));
+        return json({ files }, 200);
+      } catch (e) { return json({ error: e.message }, 500); }
+    }
+
     // DELETE /file?key=xxx
     if (request.method === "DELETE" && path === "/file") {
       try {
