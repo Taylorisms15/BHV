@@ -1,3 +1,4 @@
+import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 import { useState, useRef, useEffect, useCallback } from "react";
 
 // ── Tokens ────────────────────────────────────────────────────────────────────
@@ -473,6 +474,128 @@ async function fetchAndDecrypt(r2Key, cryptoKey) {
   }
 }
 
+async function fetchAndDecryptBytes(r2Key, cryptoKey) {
+  const resp = await fetch(`${WORKER_URL}/file?key=${encodeURIComponent(r2Key)}`);
+  if (!resp.ok) throw new Error(`Failed to fetch: ${resp.status}`);
+  const encBuffer = await resp.arrayBuffer();
+  const bytes = new Uint8Array(encBuffer);
+  const isEncrypted = r2Key.endsWith('.enc') && cryptoKey;
+  if (!isEncrypted) return encBuffer;
+  const iv = bytes.slice(0, 12);
+  const data = bytes.slice(12);
+  return await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, cryptoKey, data);
+}
+
+async function generateCertifiedPDF(doc, clientName, cryptoKey) {
+  const rawBytes = await fetchAndDecryptBytes(doc.r2Key, cryptoKey);
+  const origName = (doc.name || '').toLowerCase();
+  const isImage = ['jpg', 'jpeg', 'png', 'webp'].some(e => origName.endsWith(e));
+
+  let pdfDoc;
+  if (isImage) {
+    pdfDoc = await PDFDocument.create();
+    const img = origName.endsWith('.png')
+      ? await pdfDoc.embedPng(rawBytes)
+      : await pdfDoc.embedJpg(rawBytes);
+    const pg = pdfDoc.addPage([img.width, img.height]);
+    pg.drawImage(img, { x: 0, y: 0, width: img.width, height: img.height });
+  } else {
+    pdfDoc = await PDFDocument.load(rawBytes);
+  }
+
+  const font     = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+  const gold  = rgb(0.722, 0.604, 0.353);
+  const dark  = rgb(0.11,  0.11,  0.10);
+  const white = rgb(1, 1, 1);
+  const ink   = rgb(0.102, 0.098, 0.090);
+  const muted = rgb(0.45, 0.44, 0.42);
+
+  for (const page of pdfDoc.getPages()) {
+    const { width } = page.getSize();
+    page.drawRectangle({ x: 0, y: 0, width, height: 36, color: dark });
+    page.drawRectangle({ x: 0, y: 35.5, width, height: 0.5, color: gold });
+    page.drawText('CERTIFIED TRUE COPY', {
+      x: 16, y: 14, size: 7.5, font: fontBold, color: gold,
+    });
+    page.drawText(
+      `Certified: ${doc.certifiedAt}  |  Commission No. HH 427659  |  Mark Paul Taylor, Notary Public, State of Florida`,
+      { x: 16, y: 5, size: 6, font, color: muted }
+    );
+  }
+
+  const cp = pdfDoc.addPage([612, 792]);
+  const W = 612, H = 792, margin = 56;
+
+  cp.drawRectangle({ x: 0, y: 0, width: W, height: H, color: rgb(0.988, 0.969, 0.925) });
+  cp.drawRectangle({ x: 0, y: H - 76, width: W, height: 76, color: dark });
+  cp.drawRectangle({ x: 0, y: H - 79, width: W, height: 3, color: gold });
+  cp.drawText('BLUE HERON VAULT', {
+    x: margin, y: H - 42, size: 15, font: fontBold, color: white,
+  });
+  cp.drawText('CERTIFIED TRUE COPY CERTIFICATE', {
+    x: margin, y: H - 62, size: 8.5, font, color: gold,
+  });
+
+  let y = H - 118;
+  cp.drawText('Certification of True Copy', {
+    x: margin, y, size: 13, font: fontBold, color: ink,
+  });
+  y -= 26;
+  for (const line of [
+    'I, Mark Paul Taylor, Notary Public of the State of Florida, do hereby certify',
+    `that on ${doc.certifiedAt}, I personally reviewed the original document`,
+    `presented by ${clientName}, and certify that the foregoing is a true,`,
+    'accurate, and complete copy thereof.',
+  ]) {
+    cp.drawText(line, { x: margin, y, size: 10, font, color: ink });
+    y -= 16;
+  }
+
+  y -= 20;
+  const boxH = doc.note ? 106 : 88;
+  cp.drawRectangle({
+    x: margin, y: y - boxH, width: W - margin * 2, height: boxH + 18,
+    color: white, borderColor: gold, borderWidth: 0.75,
+  });
+  cp.drawText('Document details', { x: margin + 12, y, size: 7.5, font, color: muted });
+  cp.drawText(doc.name, { x: margin + 12, y: y - 18, size: 10.5, font: fontBold, color: ink });
+  cp.drawText(`Client: ${clientName}`, { x: margin + 12, y: y - 36, size: 10, font, color: ink });
+  cp.drawText(`Certified: ${doc.certifiedAt}`, { x: margin + 12, y: y - 52, size: 10, font, color: ink });
+  if (doc.note) {
+    cp.drawText(`Notes: ${doc.note.slice(0, 90)}`, { x: margin + 12, y: y - 68, size: 9, font, color: muted });
+  }
+
+  y -= boxH + 48;
+  const nbH = 100;
+  cp.drawRectangle({
+    x: margin, y: y - nbH, width: W - margin * 2, height: nbH + 18,
+    color: rgb(0.902, 0.957, 0.925),
+    borderColor: rgb(0.161, 0.451, 0.294),
+    borderWidth: 0.75,
+  });
+  cp.drawText('Notary Public  --  State of Florida', { x: margin + 12, y, size: 7.5, font, color: rgb(0.161, 0.451, 0.294) });
+  cp.drawText('Mark Paul Taylor', { x: margin + 12, y: y - 20, size: 12, font: fontBold, color: ink });
+  cp.drawText('Notary Public, State of Florida', { x: margin + 12, y: y - 38, size: 10, font, color: ink });
+  cp.drawText('Commission No. HH 427659   |   Expires: July 30, 2027', { x: margin + 12, y: y - 54, size: 9, font, color: muted });
+  cp.drawText('Original document verified in person at client residence', { x: margin + 12, y: y - 70, size: 8.5, font, color: muted });
+
+  cp.drawRectangle({ x: 0, y: 0, width: W, height: 36, color: dark });
+  cp.drawRectangle({ x: 0, y: 35.5, width: W, height: 0.5, color: gold });
+  cp.drawText('Blue Heron Vault  |  Document Security & Records Continuity  |  Naples, Florida', {
+    x: margin, y: 13, size: 7, font, color: muted,
+  });
+
+  const pdfBytes = await pdfDoc.save();
+  const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `certified_${doc.name.replace(/\.[^.]+$/, '')}.pdf`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
 // Strip dataUrl from docs before saving (large, ephemeral preview only)
 function stripDocsForSave(docs) {
   const stripped = {};
@@ -502,6 +625,7 @@ function DocumentsView({ clients, setClients, docs, setDocs, expiries, setExpiri
   const [linkEdits, setLinkEdits] = useState({});
   const [log, setLog]           = useState([]);
   const [viewer, setViewer]     = useState(null); // {url, name, loading}
+  const [pdfGenerating, setPdfGenerating] = useState(null);
   const fileRef = useRef();
 
   const client = clients.find(c=>c.id===selId);
@@ -905,6 +1029,7 @@ const compressFile = (file) => new Promise(resolve => {
                                 {doc.status==="uploaded"  && <button style={S.btn("gold",true)} onClick={()=>openReview(cat.key,fieldName,idx)}>Review & certify</button>}
                                 {doc.status==="certified" && <button style={S.btn("default",true)} onClick={()=>openViewer(doc)}>View doc</button>}
                                 {doc.status==="certified" && <button style={S.btn("default",true)} onClick={()=>openReview(cat.key,fieldName,idx)}>View cert.</button>}
+                                {doc.status==="certified" && <button style={S.btn("default",true)} disabled={pdfGenerating===doc.r2Key} onClick={async()=>{ setPdfGenerating(doc.r2Key); try { await generateCertifiedPDF(doc, client?.name||"", cryptoKey); } finally { setPdfGenerating(null); } }}>{pdfGenerating===doc.r2Key ? "Generating…" : "Download certified PDF"}</button>}
                                 {doc.status==="returned"  && <button style={S.btn("default",true)} onClick={()=>triggerUpload(cat.key,fieldName,idx)}>Re-upload</button>}
                                 <button style={S.btn("default",true)} onClick={()=>triggerUpload(cat.key,fieldName,idx)}>Replace</button>
                                 <button style={{...S.btn("danger",true),marginLeft:"auto"}} onClick={()=>removeDoc(cat.key,fieldName,idx)}>Remove</button>
