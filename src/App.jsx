@@ -249,6 +249,10 @@ function ClientsView({ clients, setClients, selId, setSelId }) {
                           <input style={S.input} value={form.name} onChange={e=>setForm(p=>({...p,name:e.target.value}))}/>
                         </div>
                         <div>
+                          <label style={S.label}>Client email</label>
+                          <input style={S.input} value={form.email||""} onChange={e=>setForm(p=>({...p,email:e.target.value}))} placeholder="e.g. eleanor@worthington.com"/>
+                        </div>
+                        <div>
                           <label style={S.label}>Stage</label>
                           <select style={{...S.select,width:"100%"}} value={form.stage} onChange={e=>setForm(p=>({...p,stage:e.target.value}))}>
                             {STAGES.map(s=><option key={s}>{s}</option>)}
@@ -569,18 +573,111 @@ async function generateCertifiedPDF(doc, clientName, cryptoKey) {
   }
 
   y -= boxH + 48;
-  const nbH = 100;
-  cp.drawRectangle({
-    x: margin, y: y - nbH, width: W - margin * 2, height: nbH + 18,
-    color: rgb(0.902, 0.957, 0.925),
-    borderColor: rgb(0.161, 0.451, 0.294),
-    borderWidth: 0.75,
-  });
-  cp.drawText('Notary Public  --  State of Florida', { x: margin + 12, y, size: 7.5, font, color: rgb(0.161, 0.451, 0.294) });
-  cp.drawText('Mark Paul Taylor', { x: margin + 12, y: y - 20, size: 12, font: fontBold, color: ink });
-  cp.drawText('Notary Public, State of Florida', { x: margin + 12, y: y - 38, size: 10, font, color: ink });
-  cp.drawText('Commission No. HH 427659   |   Expires: July 30, 2027', { x: margin + 12, y: y - 54, size: 9, font, color: muted });
-  cp.drawText('Original document verified in person at client residence', { x: margin + 12, y: y - 70, size: 8.5, font, color: muted });
+
+  // ── Circular notary seal ──────────────────────────────────────────────────
+  const stampCx = W / 2;
+  const stampCy = Math.round(36 + (y - 36) / 2); // centered in remaining space
+  const Ro = 90; // outer ring radius
+  const Ri = 84; // inner ring radius (double-ring effect)
+  const Rt = 73; // curved-text radius
+
+  // Rings
+  cp.drawCircle({ x: stampCx, y: stampCy, size: Ro,
+    color: rgb(0.988, 0.969, 0.925), borderColor: gold, borderWidth: 2 });
+  cp.drawCircle({ x: stampCx, y: stampCy, size: Ri, borderColor: gold, borderWidth: 1 });
+
+  // Curved text helper — draws each character individually along an arc.
+  // faceOut=true  → characters face outward (top arc, θ decreases left→right)
+  // faceOut=false → characters face inward  (bottom arc, θ increases left→right, readable from normal orientation)
+  const drawArcText = (text, r, midAngleDeg, faceOut, fnt, sz, col) => {
+    const chars = text.split('');
+    const ls = sz * 0.06; // letter spacing
+    const widths = chars.map(c => { try { return fnt.widthOfTextAtSize(c, sz); } catch { return sz * 0.55; } });
+    const totalW = widths.reduce((a, b) => a + b, 0) + ls * (chars.length - 1);
+    const mid = (midAngleDeg * Math.PI) / 180;
+    let θ = faceOut ? mid + totalW / (2 * r) : mid - totalW / (2 * r);
+    for (let i = 0; i < chars.length; i++) {
+      const w = widths[i];
+      const ca = faceOut ? θ - w / (2 * r) : θ + w / (2 * r); // center angle of this char
+      const rot = faceOut ? ca - Math.PI / 2 : ca + Math.PI / 2;
+      const px = faceOut
+        ? stampCx + r * Math.cos(ca) - (w / 2) * Math.sin(ca)
+        : stampCx + r * Math.cos(ca) + (w / 2) * Math.sin(ca);
+      const py = faceOut
+        ? stampCy + r * Math.sin(ca) + (w / 2) * Math.cos(ca)
+        : stampCy + r * Math.sin(ca) - (w / 2) * Math.cos(ca);
+      cp.drawText(chars[i], { x: px, y: py, size: sz, font: fnt, color: col,
+        rotate: { type: 'radians', angle: rot } });
+      θ = faceOut ? θ - (w + ls) / r : θ + (w + ls) / r;
+    }
+  };
+
+  // Top arc text
+  drawArcText('MARK PAUL TAYLOR', Rt, 90, true, fontBold, 7.5, dark);
+  // Bottom arc text
+  drawArcText('STATE OF FLORIDA', Rt, 270, false, fontBold, 7.5, dark);
+
+  // Center layout (top → bottom):
+  //   top divider  stampCy + 38
+  //   "NOTARY PUBLIC"  baseline stampCy + 28
+  //   signature image  y=stampCy−27 … y+18=stampCy+18  (120×45 pt)
+  //   commission   baseline stampCy − 35
+  //   expiry       baseline stampCy − 43
+  //   bottom divider  stampCy − 52
+
+  const npTxt = 'NOTARY PUBLIC';
+  const npW = fontBold.widthOfTextAtSize(npTxt, 9);
+  cp.drawText(npTxt, { x: stampCx - npW / 2, y: stampCy + 28, size: 9, font: fontBold, color: dark });
+
+  // Signature image — composited onto cream background so transparent areas
+  // match the page and no white box appears in the PDF.
+  try {
+    const sigResp = await fetch('/signature.png');
+    if (sigResp.ok) {
+      const sigBuf = await sigResp.arrayBuffer();
+      const bitmap = await createImageBitmap(new Blob([sigBuf], { type: 'image/png' }));
+      const canvas = document.createElement('canvas');
+      canvas.width = bitmap.width;
+      canvas.height = bitmap.height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(bitmap, 0, 0);
+      // Remove near-white background: make pixels with R>200, G>200, B>200 fully transparent
+      const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const d = imgData.data;
+      for (let i = 0; i < d.length; i += 4) {
+        if (d[i] > 200 && d[i+1] > 200 && d[i+2] > 200) d[i+3] = 0;
+      }
+      ctx.putImageData(imgData, 0, 0);
+      const blob = await new Promise((res, rej) => canvas.toBlob(b => b ? res(b) : rej(), 'image/png'));
+      const sigBytes = await blob.arrayBuffer();
+      const sigImg = await pdfDoc.embedPng(sigBytes);
+      cp.drawImage(sigImg, { x: stampCx - 60, y: stampCy - 27, width: 120, height: 45 });
+    }
+  } catch (e) {
+    // signature unavailable — continue without it
+  }
+
+  const c1 = 'COMM. NO. HH 427659';
+  const c1W = font.widthOfTextAtSize(c1, 5.5);
+  cp.drawText(c1, { x: stampCx - c1W / 2, y: stampCy - 35, size: 5.5, font, color: dark });
+
+  const c2 = 'EXPIRES: JULY 30, 2027';
+  const c2W = font.widthOfTextAtSize(c2, 5.5);
+  cp.drawText(c2, { x: stampCx - c2W / 2, y: stampCy - 43, size: 5.5, font, color: dark });
+
+  // Horizontal gold dividers
+  cp.drawLine({ start: { x: stampCx - 30, y: stampCy + 38 }, end: { x: stampCx + 30, y: stampCy + 38 }, thickness: 0.5, color: gold });
+  cp.drawLine({ start: { x: stampCx - 30, y: stampCy - 52 }, end: { x: stampCx + 30, y: stampCy - 52 }, thickness: 0.5, color: gold });
+
+  // Small gold diamonds flanking the content block
+  const drawDiamond = (dx, dy, d) => {
+    const pts = [[dx, dy + d], [dx + d, dy], [dx, dy - d], [dx - d, dy], [dx, dy + d]];
+    for (let i = 0; i < 4; i++) {
+      cp.drawLine({ start: { x: pts[i][0], y: pts[i][1] }, end: { x: pts[i+1][0], y: pts[i+1][1] }, thickness: 0.75, color: gold });
+    }
+  };
+  drawDiamond(stampCx - 42, stampCy - 7, 3.5);
+  drawDiamond(stampCx + 42, stampCy - 7, 3.5);
 
   cp.drawRectangle({ x: 0, y: 0, width: W, height: 36, color: dark });
   cp.drawRectangle({ x: 0, y: 35.5, width: W, height: 0.5, color: gold });
@@ -619,9 +716,6 @@ function stripDocsForSave(docs) {
 
 function DocumentsView({ clients, setClients, docs, setDocs, expiries, setExpiries, selId, setSelId, cryptoKey }) {
   const [expanded, setExpanded] = useState({estate:true,identity:false,property:false,health:false});
-  const [reviewTarget, setReview] = useState(null);
-  const [opNote, setOpNote]     = useState("");
-  const [opExpiry, setOpExpiry] = useState("");
   const [dragOver, setDragOver] = useState(null);
   const [pendingUp, setPending] = useState(null);
   const [linkEdits, setLinkEdits] = useState({});
@@ -839,21 +933,12 @@ const compressFile = (file) => new Promise(resolve => {
     setViewer(null);
   };
 
-  const openReview = (ck,fn,idx) => {
-    setReview({ck,fn,idx});
-    const existing = getDocs(ck,fn)[idx]?.note||"";
-    setOpNote(existing || "Original verified in-person · Commission No. HH 427659 · Expires 7/30/2027");
-    // Use extracted expiry if available, fall back to stored expiry
+  const certifyDoc = async (ck, fn, idx) => {
     const doc = getDocs(ck,fn)[idx];
-    setOpExpiry(doc?.extractedExpiry || expiries[selId]?.[`${fn}__${idx}`] || expiries[selId]?.[fn] || "");
-  };
-  const closeReview = () => { setReview(null); setOpNote(""); setOpExpiry(""); };
-
-  const certify = async () => {
-    const {ck,fn,idx}=reviewTarget;
-    const doc = getDocs(ck,fn)[idx];
-    updateDoc(ck,fn,idx,{status:"certified",certifiedAt:ts(),note:opNote});
-    if (opExpiry) setExpiries(p=>({...p,[selId]:{...p[selId],[`${fn}__${idx}`]:opExpiry}}));
+    const note = doc?.note || "Original verified in-person · Commission No. HH 427659 · Expires 7/30/2027";
+    const expiry = doc?.extractedExpiry || expiries[selId]?.[`${fn}__${idx}`] || expiries[selId]?.[fn] || "";
+    updateDoc(ck,fn,idx,{status:"certified",certifiedAt:ts(),note});
+    if (expiry) setExpiries(p=>({...p,[selId]:{...p[selId],[`${fn}__${idx}`]:expiry}}));
     setClients(p=>p.map(c=>{
       if (c.id!==selId) return c;
       return {...c,checklist:{...c.checklist,[ck]:{...c.checklist[ck],[fn]:true}}};
@@ -863,15 +948,12 @@ const compressFile = (file) => new Promise(resolve => {
     const clientPassphrase = client?.clientPassphrase;
     if (clientPassphrase && doc?.r2Key && cryptoKey) {
       try {
-        // Fetch and decrypt with operator key
         const resp = await fetch(`${WORKER_URL}/file?key=${encodeURIComponent(doc.r2Key)}`, { headers: AUTH_HEADER });
         if (resp.ok) {
           const encBuf = await resp.arrayBuffer();
           const bytes = new Uint8Array(encBuf);
           const origName = doc.r2Key.split("/").pop().replace(/\.enc$/, "");
-          const isPDF = origName.toLowerCase().endsWith(".pdf");
 
-          // Decrypt with operator key
           let plainBuf;
           if (doc.r2Key.endsWith(".enc")) {
             const iv = bytes.slice(0,12), data = bytes.slice(12);
@@ -880,7 +962,6 @@ const compressFile = (file) => new Promise(resolve => {
             plainBuf = encBuf;
           }
 
-          // Re-encrypt with client key
           const clientKey = await deriveKey(clientPassphrase);
           const clientEncBuf = await encryptBuffer(plainBuf, clientKey);
           const clientFile = new File([clientEncBuf], `${origName}.enc`, {type:"application/octet-stream"});
@@ -906,13 +987,6 @@ const compressFile = (file) => new Promise(resolve => {
     } else {
       addLog(`✦ Certified: "${fn}" — ${client.name}`,C.success);
     }
-    closeReview();
-  };
-  const returnDoc = () => {
-    const {ck,fn,idx}=reviewTarget;
-    updateDoc(ck,fn,idx,{status:"returned",note:opNote});
-    addLog(`Returned: "${fn}" — ${client.name}`,C.danger);
-    closeReview();
   };
 
   // Flatten all docs for stats
@@ -922,9 +996,6 @@ const compressFile = (file) => new Promise(resolve => {
   const nR2     = allDocs.filter(d=>d.r2Key).length;
 
   if (!client) return null;
-
-  // Review modal doc
-  const reviewDoc = reviewTarget ? getDocs(reviewTarget.ck,reviewTarget.fn)[reviewTarget.idx] : null;
 
   return (
     <>
@@ -1028,9 +1099,8 @@ const compressFile = (file) => new Promise(resolve => {
                               <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",marginBottom:6}}>
                                 <span style={{fontSize:11,color:C.textMut}}>{(doc.size/1024).toFixed(0)} KB · {doc.uploadedAt}</span>
                                 {doc.status==="certified" && <span style={{fontSize:11,color:C.success,fontWeight:500}}>✦ {doc.certifiedAt}</span>}
-                                {doc.status==="uploaded"  && <button style={S.btn("gold",true)} onClick={()=>openReview(cat.key,fieldName,idx)}>Review & certify</button>}
+                                {doc.status==="uploaded"  && <button style={S.btn("gold",true)} onClick={()=>certifyDoc(cat.key,fieldName,idx)}>Review & certify</button>}
                                 {doc.status==="certified" && <button style={S.btn("default",true)} onClick={()=>openViewer(doc)}>View doc</button>}
-                                {doc.status==="certified" && <button style={S.btn("default",true)} onClick={()=>openReview(cat.key,fieldName,idx)}>View cert.</button>}
                                 {doc.status==="certified" && <button style={S.btn("default",true)} disabled={pdfGenerating===doc.r2Key} onClick={async()=>{ setPdfGenerating(doc.r2Key); try { await generateCertifiedPDF(doc, client?.name||"", cryptoKey); } finally { setPdfGenerating(null); } }}>{pdfGenerating===doc.r2Key ? "Generating…" : "Download certified PDF"}</button>}
                                 {doc.status==="returned"  && <button style={S.btn("default",true)} onClick={()=>triggerUpload(cat.key,fieldName,idx)}>Re-upload</button>}
                                 <button style={S.btn("default",true)} onClick={()=>triggerUpload(cat.key,fieldName,idx)}>Replace</button>
@@ -1108,76 +1178,6 @@ const compressFile = (file) => new Promise(resolve => {
         </div>
       )}
 
-      {/* Certification modal */}
-      {reviewTarget && reviewDoc && (()=>{
-        const {ck,fn,idx}=reviewTarget;
-        const doc=reviewDoc;
-        const isImg = ["jpg","jpeg","png","webp"].some(e=>doc.name.toLowerCase().endsWith(e));
-        const isPDF = doc.name.toLowerCase().endsWith(".pdf");
-        return (
-          <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.35)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000,padding:16}}
-            onClick={closeReview}>
-            <div style={{background:C.bg,borderRadius:12,width:520,maxWidth:"100%",overflow:"hidden",border:`1px solid ${C.borderMd}`,maxHeight:"90vh",overflowY:"auto"}}
-              onClick={e=>e.stopPropagation()}>
-              <div style={{padding:"16px 20px",borderBottom:`1px solid ${C.border}`,display:"flex",alignItems:"center",justifyContent:"space-between",position:"sticky",top:0,background:C.bg,zIndex:1}}>
-                <div>
-                  <p style={{fontSize:15,fontWeight:500,color:C.text,margin:0}}>Certification review</p>
-                  <p style={{fontSize:11,color:C.textSub,marginTop:2}}>{fn} · {client.name}</p>
-                </div>
-                <button style={{...S.btn("default",true),borderRadius:"50%",padding:"4px 8px"}} onClick={closeReview}>✕</button>
-              </div>
-              <div style={{padding:20}}>
-                <div style={{background:"#eceae5",borderRadius:8,padding:12,marginBottom:16,textAlign:"center",border:"1px solid #dedad3",maxHeight:220,overflow:"hidden"}}>
-                  {isImg
-                    ? <img src={doc.dataUrl} alt={doc.name} style={{maxWidth:"100%",maxHeight:200,objectFit:"contain",borderRadius:4}}/>
-                    : isPDF
-                    ? <iframe src={doc.dataUrl} title="preview" style={{width:"100%",height:200,border:"none",borderRadius:4}}/>
-                    : <div style={{padding:"24px 0"}}><div style={{fontSize:32}}>{fileIcon(doc.name)}</div><p style={{color:C.textSub,fontSize:13,marginTop:8}}>{doc.name}</p></div>
-                  }
-                </div>
-                {doc.status==="certified" && (
-                  <div style={{border:`1px solid ${C.success}`,borderRadius:8,padding:"14px 16px",background:C.successBg,marginBottom:16}}>
-                    <p style={{fontSize:10,fontWeight:500,letterSpacing:"0.08em",textTransform:"uppercase",color:C.success,marginBottom:8}}>✦ Certified True Copy</p>
-                    <p style={{fontSize:12,color:C.text,lineHeight:1.75,margin:"0 0 12px"}}>
-                      I certify that on {doc.certifiedAt}, I, a notary public of the State of Florida, personally
-                      reviewed the original document presented by {client.name} and that this is a true,
-                      accurate, and complete copy thereof.
-                    </p>
-                    <div style={{borderTop:`1px solid ${C.success}`,paddingTop:10,display:"flex",alignItems:"center",gap:12}}>
-                      <div style={{width:32,height:32,borderRadius:4,background:"#1a3a2a",display:"flex",alignItems:"center",justifyContent:"center",color:"#a0d4b8",fontSize:11,fontWeight:700,flexShrink:0,letterSpacing:"-0.5px"}}>FL</div>
-                      <div style={{fontSize:11,color:C.success,lineHeight:1.6}}>
-                        <strong>Mark Paul Taylor</strong><br/>
-                        Notary Public · State of Florida<br/>
-                        Commission No. HH 427659 · Expires 7/30/2027
-                      </div>
-                    </div>
-                  </div>
-                )}
-                <div style={{marginBottom:14}}>
-                  <label style={S.label}>Document expiry <span style={{textTransform:"none",letterSpacing:0,color:C.textMut}}>(auto-populates Compliance)</span></label>
-                  <input type="date" style={{...S.input,maxWidth:220}} value={opExpiry} onChange={e=>setOpExpiry(e.target.value)}/>
-                </div>
-                <div style={{marginBottom:16}}>
-                  <label style={S.label}>Notary note <span style={{textTransform:"none",letterSpacing:0,color:C.textMut}}>(optional)</span></label>
-                  <textarea value={opNote} onChange={e=>setOpNote(e.target.value)}
-                    placeholder="e.g. Original verified in-person · Additional observations"
-                    style={{...S.input,minHeight:64,resize:"vertical"}}/>
-                </div>
-                <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
-                  {doc.status!=="certified" && <>
-                    <button style={S.btn("danger")} onClick={returnDoc}>Return for re-upload</button>
-                    <button style={{...S.btn("gold"),background:goldBg}} onClick={certify}>✦ Certify document</button>
-                  </>}
-                  {doc.status==="certified" && <>
-                    <button style={S.btn()} onClick={closeReview}>Close</button>
-                    <button style={S.btn("danger")} onClick={returnDoc}>Revoke & return</button>
-                  </>}
-                </div>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
     </>
   );
 }
@@ -1264,91 +1264,7 @@ function ComplianceView({ clients, docs, expiries, setExpiries, selId, setSelId 
 // ══════════════════════════════════════════════════════════════════════════════
 //  VAULT DELIVERY
 // ══════════════════════════════════════════════════════════════════════════════
-function VaultDeliveryView({ clients, docs, selId, setSelId }) {
-  const [checks, setChecks]     = useState({});
-  const [delivered, setDelivered] = useState({});
-  const client = clients.find(c=>c.id===selId);
 
-  const STEPS = [
-    "Vault app installed and confirmed on client device",
-    "Client passphrase set privately — operator has no copy",
-    "Client confirms access to every document in the vault",
-    "Emergency access protocol reviewed and documented",
-    "First quarterly sync appointment scheduled",
-  ];
-
-  const cChecks = checks[selId]||{};
-  const allDone = STEPS.every((_,i)=>cChecks[i]);
-  const toggle  = i => setChecks(p=>({...p,[selId]:{...p[selId],[i]:!p[selId]?.[i]}}));
-
-  if (!client) return null;
-
-  return (
-    <>
-      <PageHeader title="Vault Delivery" sub="In-person handoff checklist">
-        <select style={S.select} value={selId} onChange={e=>setSelId(e.target.value)}>
-          {clients.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
-        </select>
-      </PageHeader>
-      <div style={{padding:"20px 24px",overflowY:"auto",flex:1}}>
-        {/* Client summary */}
-        <div style={{background:"#eceae5",border:"1px solid #dedad3",borderRadius:8,padding:"14px 16px",marginBottom:16,display:"flex",alignItems:"center",gap:12}}>
-          <Avatar name={client.name} size={36}/>
-          <div style={{flex:1}}>
-            <p style={{fontSize:14,fontWeight:500,color:C.text,margin:0}}>{client.name}</p>
-            <p style={{fontSize:11,color:C.textSub,marginTop:2}}>
-              {client.auditDate?`Audit: ${client.auditDate}`:"No audit date set"}
-            </p>
-          </div>
-          {delivered[selId] && (
-            <span style={{fontSize:11,fontWeight:500,background:C.successBg,color:C.success,padding:"4px 10px",borderRadius:8}}>✦ Delivered</span>
-          )}
-        </div>
-
-        <div style={S.card}>
-          <div style={S.cardHead}>
-            <span style={{fontSize:13,fontWeight:500,color:C.text,flex:1}}>Handoff checklist</span>
-            <span style={{fontSize:11,color:allDone?C.success:C.textSub,background:C.bgSurf,padding:"2px 8px",borderRadius:8}}>
-              {STEPS.filter((_,i)=>cChecks[i]).length} / {STEPS.length}
-            </span>
-          </div>
-          <div style={{padding:"2px 16px 8px"}}>
-            {STEPS.map((step,i)=>(
-              <div key={i} style={{display:"flex",alignItems:"flex-start",gap:10,padding:"10px 0",borderBottom:`0.5px solid ${C.border}`,cursor:"pointer"}}
-                onClick={()=>toggle(i)}>
-                <div style={{width:20,height:20,borderRadius:4,border:`0.5px solid ${cChecks[i]?C.success:C.borderMd}`,
-                  background:cChecks[i]?C.successBg:"transparent",display:"flex",alignItems:"center",justifyContent:"center",
-                  flexShrink:0,marginTop:1,transition:"all 0.15s"}}>
-                  {cChecks[i]&&<span style={{color:C.success,fontSize:12}}>✓</span>}
-                </div>
-                <span style={{fontSize:13,color:cChecks[i]?C.textSub:C.text}}>{step}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {!delivered[selId] && (
-          <button style={{...S.btn(allDone?"gold":"default"),width:"100%",justifyContent:"center",
-            padding:"11px",fontSize:13,opacity:allDone?1:0.45,cursor:allDone?"pointer":"not-allowed",
-            ...(allDone?{background:goldBg}:{})}}
-            onClick={()=>allDone&&setDelivered(p=>({...p,[selId]:true}))}
-            disabled={!allDone}>
-            {allDone?"✦ Confirm vault delivered":"Complete all steps to confirm"}
-          </button>
-        )}
-        {delivered[selId] && (
-          <div style={{border:`0.5px solid ${C.success}`,borderRadius:8,padding:"14px 16px",background:C.successBg,marginTop:8}}>
-            <p style={{fontSize:12,fontWeight:500,color:C.success,margin:0}}>✦ Vault successfully delivered</p>
-            <p style={{fontSize:12,color:C.text,marginTop:6,lineHeight:1.65}}>
-              Handoff for {client.name} is complete. Blue Heron Vault retains metadata only.
-              All document access is controlled exclusively by the client.
-            </p>
-          </div>
-        )}
-      </div>
-    </>
-  );
-}
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  PAGE HEADER
@@ -1377,7 +1293,6 @@ const NAV = [
   { key:"redfolder", label:"Red Folder",       icon:"□" },
   { key:"documents", label:"Upload & Certify", icon:"✦" },
   { key:"compliance",label:"Compliance",       icon:"◷" },
-  { key:"delivery",  label:"Vault Delivery",   icon:"◻" },
 ];
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1652,7 +1567,6 @@ export default function App() {
             {view==="redfolder"  && <RedFolderView     clients={clients} setClients={setClients} selId={selId} setSelId={setSelId}/>}
             {view==="documents"  && <DocumentsView     clients={clients} setClients={setClients} docs={docs} setDocs={setDocs} expiries={expiries} setExpiries={setExpiries} selId={selId} setSelId={setSelId} cryptoKey={cryptoKey}/>}
             {view==="compliance" && <ComplianceView    clients={clients} docs={docs} expiries={expiries} setExpiries={setExpiries} selId={selId} setSelId={setSelId}/>}
-            {view==="delivery"   && <VaultDeliveryView clients={clients} docs={docs} selId={selId} setSelId={setSelId}/>}
           </div>
         </div>
       </div>

@@ -10,7 +10,7 @@ export default {
       return new Response(null, { headers: CORS });
     }
 
-    const expectedToken = env.BHV_API_SECRET || "9a2c008e9f0ea7f98939f75b961d5e83be5e05f8ae4a8fa0e208162e49830cd";
+    const expectedToken = env.BHV_API_SECRET || "ef284532534e3161fdf2ea2f4f3a7e92a63a8212dbb860ebe420b69109a7eeff";
     const authHeader = request.headers.get("Authorization");
     if (!authHeader || authHeader !== `Bearer ${expectedToken}`) {
       return new Response(JSON.stringify({ error: "Unauthorized" }), {
