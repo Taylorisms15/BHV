@@ -388,6 +388,8 @@ function RedFolderView({ clients, setClients, selId, setSelId }) {
 // ══════════════════════════════════════════════════════════════════════════════
 // ── Encryption utilities ──────────────────────────────────────────────────────
 const WORKER_URL = "https://bhv-api.mark-862.workers.dev";
+const API_TOKEN  = import.meta.env.VITE_API_SECRET;
+const AUTH_HEADER = { Authorization: `Bearer ${API_TOKEN}` };
 const SALT = new TextEncoder().encode("bhv-salt-2026-mark-taylor");
 const KDF_ITERATIONS = 100000;
 
@@ -441,7 +443,7 @@ async function decryptText(b64, key) {
 
 // Fetch encrypted file from R2, decrypt, return object URL
 async function fetchAndDecrypt(r2Key, cryptoKey) {
-  const resp = await fetch(`${WORKER_URL}/file?key=${encodeURIComponent(r2Key)}`);
+  const resp = await fetch(`${WORKER_URL}/file?key=${encodeURIComponent(r2Key)}`, { headers: AUTH_HEADER });
   if (!resp.ok) throw new Error(`Failed to fetch: ${resp.status}`);
   const encBuffer = await resp.arrayBuffer();
   const bytes = new Uint8Array(encBuffer);
@@ -475,7 +477,7 @@ async function fetchAndDecrypt(r2Key, cryptoKey) {
 }
 
 async function fetchAndDecryptBytes(r2Key, cryptoKey) {
-  const resp = await fetch(`${WORKER_URL}/file?key=${encodeURIComponent(r2Key)}`);
+  const resp = await fetch(`${WORKER_URL}/file?key=${encodeURIComponent(r2Key)}`, { headers: AUTH_HEADER });
   if (!resp.ok) throw new Error(`Failed to fetch: ${resp.status}`);
   const encBuffer = await resp.arrayBuffer();
   const bytes = new Uint8Array(encBuffer);
@@ -733,7 +735,7 @@ const compressFile = (file) => new Promise(resolve => {
           return {...prev,[selId]:{...cd,[ck]:{...cat,[fn]:arr}}};
         });
 
-        const resp = await fetch(`${WORKER_URL}/upload`, { method:"POST", body:formData });
+        const resp = await fetch(`${WORKER_URL}/upload`, { method:"POST", body:formData, headers: AUTH_HEADER });
         const data = await resp.json();
 
         if (data.success) {
@@ -762,7 +764,7 @@ const compressFile = (file) => new Promise(resolve => {
           const extractForm = new FormData();
           extractForm.append("file", file);
           extractForm.append("fileName", file.name);
-          fetch(`${WORKER_URL}/extract`, { method:"POST", body:extractForm })
+          fetch(`${WORKER_URL}/extract`, { method:"POST", body:extractForm, headers: AUTH_HEADER })
             .then(r=>r.json())
             .then(exData=>{
               if (exData.success) {
@@ -862,7 +864,7 @@ const compressFile = (file) => new Promise(resolve => {
     if (clientPassphrase && doc?.r2Key && cryptoKey) {
       try {
         // Fetch and decrypt with operator key
-        const resp = await fetch(`${WORKER_URL}/file?key=${encodeURIComponent(doc.r2Key)}`);
+        const resp = await fetch(`${WORKER_URL}/file?key=${encodeURIComponent(doc.r2Key)}`, { headers: AUTH_HEADER });
         if (resp.ok) {
           const encBuf = await resp.arrayBuffer();
           const bytes = new Uint8Array(encBuf);
@@ -891,7 +893,7 @@ const compressFile = (file) => new Promise(resolve => {
           formData.append("fileName", clientFile.name);
           formData.append("clientCopy", "true");
 
-          const uploadResp = await fetch(`${WORKER_URL}/client-upload`, {method:"POST",body:formData});
+          const uploadResp = await fetch(`${WORKER_URL}/client-upload`, {method:"POST",body:formData,headers:AUTH_HEADER});
           const uploadData = await uploadResp.json();
           if (uploadData.success) {
             updateDoc(ck,fn,idx,{clientR2Key: uploadData.key});
@@ -1405,9 +1407,9 @@ export default function App() {
     setLoading(true);
     try {
       const [cRes, dRes, eRes] = await Promise.all([
-        fetch(`${WORKER_URL}/meta?key=clients`).then(r=>r.json()),
-        fetch(`${WORKER_URL}/meta?key=docs`).then(r=>r.json()),
-        fetch(`${WORKER_URL}/meta?key=expiries`).then(r=>r.json()),
+        fetch(`${WORKER_URL}/meta?key=clients`, { headers: AUTH_HEADER }).then(r=>r.json()),
+        fetch(`${WORKER_URL}/meta?key=docs`,    { headers: AUTH_HEADER }).then(r=>r.json()),
+        fetch(`${WORKER_URL}/meta?key=expiries`,{ headers: AUTH_HEADER }).then(r=>r.json()),
       ]);
       const decrypt = async (res) => {
         if (!res.data) return null;
@@ -1440,9 +1442,9 @@ export default function App() {
           encryptText(JSON.stringify(stripDocsForSave(newDocs)), key),
           encryptText(JSON.stringify(newExpiries), key),
         ]);
-        fetch(`${WORKER_URL}/meta?key=clients`, { method:"POST", body:JSON.stringify(ec),  headers:{"Content-Type":"application/json"} }).catch(()=>{});
-        fetch(`${WORKER_URL}/meta?key=docs`,    { method:"POST", body:JSON.stringify(ed),  headers:{"Content-Type":"application/json"} }).catch(()=>{});
-        fetch(`${WORKER_URL}/meta?key=expiries`,{ method:"POST", body:JSON.stringify(ee),  headers:{"Content-Type":"application/json"} }).catch(()=>{});
+        fetch(`${WORKER_URL}/meta?key=clients`, { method:"POST", body:JSON.stringify(ec),  headers:{...AUTH_HEADER,"Content-Type":"application/json"} }).catch(()=>{});
+        fetch(`${WORKER_URL}/meta?key=docs`,    { method:"POST", body:JSON.stringify(ed),  headers:{...AUTH_HEADER,"Content-Type":"application/json"} }).catch(()=>{});
+        fetch(`${WORKER_URL}/meta?key=expiries`,{ method:"POST", body:JSON.stringify(ee),  headers:{...AUTH_HEADER,"Content-Type":"application/json"} }).catch(()=>{});
       } catch(e) { console.warn("Save failed:", e); }
     }, 1500);
   }, []);

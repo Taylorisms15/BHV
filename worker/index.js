@@ -9,6 +9,16 @@ export default {
     if (request.method === "OPTIONS") {
       return new Response(null, { headers: CORS });
     }
+
+    const expectedToken = env.BHV_API_SECRET || "9a2c008e9f0ea7f98939f75b961d5e83be5e05f8ae4a8fa0e208162e49830cd";
+    const authHeader = request.headers.get("Authorization");
+    if (!authHeader || authHeader !== `Bearer ${expectedToken}`) {
+      return new Response(JSON.stringify({ error: "Unauthorized" }), {
+        status: 401,
+        headers: { ...CORS, "Content-Type": "application/json" },
+      });
+    }
+
     const url = new URL(request.url);
     const path = url.pathname;
 
